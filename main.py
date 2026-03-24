@@ -1,6 +1,7 @@
 import os
-from scripts.DocSplitter import split_pdf_locally
-from scripts.DocExtractor import extract_text_from_pdf, classify_and_extract, archive_document
+from scripts.DocSplitter import split_pdf_qwen_hybrid
+from scripts.DocExtractor import extract_text_from_pdf, classify_and_extract
+from scripts.DocSave import archive_document
 
 def main():
     input_folder = "data/input"
@@ -19,7 +20,7 @@ def main():
         full_path = os.path.join(input_folder, scan)
         
         # 2. In Einzeldokumente splitten
-        split_pdf_locally(full_path, temp_folder)
+        split_pdf_qwen_hybrid(full_path, temp_folder)
         
         # 3. Jedes neue Dokument verarbeiten
         for split_doc in os.listdir(temp_folder):

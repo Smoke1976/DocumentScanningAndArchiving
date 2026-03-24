@@ -1,45 +1,58 @@
 import os
 import ollama
-from pdf2image import convert_from_path
+import re
 from pypdf import PdfReader, PdfWriter
-import io
 
-def split_pdf_locally(input_pdf_path, output_folder):
-    print(f"Verarbeite: {input_pdf_path}...")
-    images = convert_from_path(input_pdf_path)
+def is_new_doc_qwen(text_chunk):
+    """Prüft mit Qwen2-0.5b, ob eine neue Seite beginnt."""
+    # Sehr kurzer, präziser Prompt für kleine Modelle
+    prompt = f"""Task: Is this the first page of a NEW document? 
+    Text: {text_chunk[:500]}
+    Answer only 'YES' or 'NO'."""
+
+    try:
+        response = ollama.generate(
+            model='qwen2:0.5b', 
+            prompt=prompt,
+            options={
+                "num_predict": 5, 
+                "temperature": 0,
+                "num_thread": 4 # Nutzt 4 CPU-Kerne auf deinem Kali
+            }
+        )
+        result = response['response'].strip().upper()
+        return "YES" in result
+    except Exception as e:
+        print(f"Fehler bei Qwen-Abfrage: {e}")
+        return False
+
+def split_pdf_qwen_hybrid(input_pdf_path, output_folder):
     reader = PdfReader(input_pdf_path)
-    
     writer = PdfWriter()
     doc_count = 1
-
-    for i, image in enumerate(images):
-        # Bild in Bytes umwandeln für Ollama
-        img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format='PNG')
-        img_bytes = img_byte_arr.getvalue()
-
-        # Lokale KI (Llava) fragen
-        response = ollama.generate(
-            model='llava',
-            prompt="Ist dies die erste Seite eines neuen Dokuments? Antworte nur mit JA oder NEIN.",
-            images=[img_bytes]
-        )
-
-        is_new_doc = "JA" in response['response'].upper()
-
-        if is_new_doc and i > 0:
+    
+    for i, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        
+        # 1. Schneller Regex-Vorfilter (spart CPU-Zeit)
+        if "seite 2" in text.lower() or "page 2" in text.lower():
+            is_new = False
+        elif "seite 1" in text.lower() or "page 1" in text.lower():
+            is_new = True
+        else:
+            # 2. Nur wenn Regex nicht hilft, fragen wir Qwen
+            is_new = is_new_doc_qwen(text)
+        
+        if is_new and i > 0:
             save_pdf(writer, output_folder, doc_count)
             writer = PdfWriter()
             doc_count += 1
-        
-        writer.add_page(reader.pages[i])
+            
+        writer.add_page(page)
 
     save_pdf(writer, output_folder, doc_count)
 
 def save_pdf(writer, folder, count):
-    path = os.path.join(folder, f"split_doc_{count}.pdf")
+    path = os.path.join(folder, f"doc_{count}.pdf")
     with open(path, "wb") as f:
         writer.write(f)
-    print(f"Gespeichert: {path}")
-
-# split_pdf_locally("data/input/mein_scan.pdf", "data/output/")
