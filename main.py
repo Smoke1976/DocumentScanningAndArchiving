@@ -1,6 +1,6 @@
 import os
-from scripts.splitter import split_pdf_locally
-from scripts.processor import extract_text_from_pdf, classify_and_extract, archive_document
+from scripts.DocSplitter import split_pdf_locally
+from scripts.DocExtractor import extract_text_from_pdf, classify_and_extract, archive_document
 
 def main():
     input_folder = "data/input"
