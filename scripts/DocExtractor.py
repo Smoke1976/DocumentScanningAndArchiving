@@ -1,32 +1,56 @@
-import os
-from dotenv import load_dotenv
-import google.generativeai as genai
+import pytesseract
+from pdf2image import convert_from_path
 from pypdf import PdfReader
+import ollama
+import json
 
-# 1. Setup
-load_dotenv() # Lädt API Key aus .env Datei
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel('gemini-1.5-flash')
-
-def analyze_document(pdf_path):
-    # Text aus der ersten Seite extrahieren (einfaches Beispiel)
+def extract_text_from_pdf(pdf_path):
+    """Extrahiert Text direkt oder via OCR, falls kein Text gefunden wurde."""
     reader = PdfReader(pdf_path)
-    first_page_text = reader.pages[0].extract_text()
+    text = ""
     
-    # Prompt für die KI
+    # Versuche zuerst, eingebetteten Text zu lesen
+    for page in reader.pages:
+        text += page.extract_text() or ""
+    
+    # Wenn fast kein Text gefunden wurde (Bild-PDF), nutze OCR
+    if len(text.strip()) < 20:
+        print(f"OCR wird gestartet für: {pdf_path}")
+        images = convert_from_path(pdf_path)
+        text = ""
+        for img in images:
+            # 'deu' für deutsche Texterkennung (muss installiert sein)
+            text += pytesseract.image_to_string(img, lang='deu')
+            
+    return text
+
+def classify_and_extract(text):
+    """Nutzt Ollama (Mistral), um das Dokument zu analysieren."""
     prompt = f"""
-    Analysiere diesen Text eines Dokuments:
-    {first_page_text}
+    Analysiere den folgenden Text eines Dokuments und extrahiere Informationen im JSON-Format.
+    Kategorien: Rechnung, Gehaltsabrechnung, Versicherung, Vertrag, Sonstiges.
     
-    Gib mir ein JSON zurück mit:
-    - type (z.B. Rechnung, Gehaltsabrechnung, Versicherung)
-    - date (YYYY-MM-DD)
-    - sender (Name der Firma/Person)
-    - subject (Kurzer Betreff)
+    Text:
+    {text[:2000]}  # Wir nehmen die ersten 2000 Zeichen zur Analyse
+    
+    Antworte NUR mit validem JSON in diesem Format:
+    {{
+        "typ": "Kategorie",
+        "datum": "YYYY-MM-DD",
+        "absender": "Name der Firma",
+        "betreff": "Kurze Zusammenfassung"
+    }}
     """
     
-    response = model.generate_content(prompt)
-    return response.text
+    response = ollama.generate(model='mistral', prompt=prompt)
+    
+    # Bereinigung, falls die KI Text um das JSON herum baut
+    raw_output = response['response']
+    start = raw_output.find('{')
+    end = raw_output.rfind('}') + 1
+    return json.loads(raw_output[start:end])
 
-# Beispielaufruf
-# print(analyze_document("data/input/scan_001.pdf"))
+# Beispiel Testlauf:
+# doc_text = extract_text_from_pdf("data/output/split_doc_1.pdf")
+# metadata = classify_and_extract(doc_text)
+# print(metadata)

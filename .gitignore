@@ -1,4 +1,10 @@
+# Lokale Umgebung
 venv/
-.env
-data/
 __pycache__/
+
+# NIEMALS die echten Dokumente hochladen
+data/input/
+data/output/
+
+# Keine Log-Files mit sensiblen Daten
+*.log
