@@ -1,8 +1,11 @@
+import os
 import pytesseract
 from pdf2image import convert_from_path
 from pypdf import PdfReader
-import ollama
+import google.genai as genai
+from google.genai import types
 import json
+
 
 def extract_text_from_pdf(pdf_path):
     """Extrahiert Text direkt oder via OCR, falls kein Text gefunden wurde."""
@@ -25,14 +28,13 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 def classify_and_extract(text):
-    """Nutzt Ollama (Mistral), um das Dokument zu analysieren."""
+    """Nutzt Google Gemini 2.5 Flash, um das Dokument zu analysieren."""
     prompt = f"""
     Analysiere den folgenden Text eines Dokuments und extrahiere Informationen im JSON-Format.
-    Kategorien: Rechnung, Gehaltsabrechnung, Versicherung, Vertrag, Sonstiges.
-    
+    Kategorien: Rechnung, Gehaltsabrechnung, Versicherung, Vertrag, Sonstiges.    Antworte sehr präzise, validiere die Ausgabe und gib nur gültiges JSON zurück.
     Text:
-    {text[:2000]}  # Wir nehmen die ersten 2000 Zeichen zur Analyse
-    
+    {text[:2000]}
+
     Antworte NUR mit validem JSON in diesem Format:
     {{
         "typ": "Kategorie",
@@ -41,52 +43,76 @@ def classify_and_extract(text):
         "betreff": "Kurze Zusammenfassung"
     }}
     """
-    text_shortened = text[:400]
-    response = ollama.generate(
-        model='qwen2:0.5b', # Wechsel auf das kleine Modell
-        prompt=f"Dokumenten-Text: {text_shortened}\nAntworte im JSON-Format: {{'typ': '...', 'datum': '...', 'sender': '...'}}",
-        options={
-            "num_thread": 4,   # Nutze nur 4 Kerne, damit Kali benutzbar bleibt
-            "num_predict": 64,  # Sehr kurze Antwort erzwingen
-            "temperature": 0
-        }
+
+    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not gemini_key:
+        raise RuntimeError("GEMINI_API_KEY oder GOOGLE_API_KEY muss gesetzt sein")
+
+    client = genai.Client(api_key=gemini_key)
+    model_name = "gemini-2.5-flash"
+
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            max_output_tokens=512,
+            temperature=0.0,
+            top_p=1.0
+        )
     )
-    
-    # Bereinigung, falls die KI Text um das JSON herum baut
-    raw_output = response['response'].strip()
 
-    # Direktversuch: volle Ausgabe parsen
+    raw_output = ""
+    if hasattr(response, "text") and response.text:
+        raw_output = str(response.text).strip()
+    elif hasattr(response, "parts") and response.parts:
+        part_texts = [
+            p.get("text", "") if isinstance(p, dict) else getattr(p, "text", "")
+            for p in response.parts
+        ]
+        raw_output = " ".join(filter(None, part_texts)).strip()
+    else:
+        raise ValueError("Keine gültige Ausgabe von Gemini erhalten")
+
+    # Handhabe Code-Fencing (```json ... ```)
+    if raw_output.startswith("```"):
+        parts = raw_output.split("\n")
+        if parts[0].startswith("```"):
+            parts = parts[1:]
+        if parts and parts[-1].strip().endswith("```"):
+            parts = parts[:-1]
+        raw_output = "\n".join(parts).strip()
+
+    # Ggf. mit JSON umgeben, falls Gemini strukturiert umsäumt liefert
+    metadata = None
     try:
-        return json.loads(raw_output)
+        metadata = json.loads(raw_output)
     except json.JSONDecodeError:
-        pass
+        start = raw_output.find('{')
+        if start == -1:
+            # Keine JSON-Struktur erkennbar, Rückgabe mit default
+            return {"typ": "Sonstiges", "datum": "", "absender": "", "betreff": ""}
 
-    # Extrahiere erstes JSON-Objekt
-    start = raw_output.find('{')
-    end = raw_output.rfind('}') + 1
-    if start == -1 or end == 0 or start >= end:
-        raise ValueError(f"Keine JSON-Struktur im Output gefunden: {raw_output!r}")
+        candidate = raw_output[start:]
+        # Wenn nur unvollständiges JSON geliefert wird, versuchen wir noch, schließende Klammern hinzuzufügen
+        if '}' not in candidate:
+            candidate += '}'
 
-    candidate = raw_output[start:end]
+        end = candidate.rfind('}') + 1
+        if end <= 0:
+            return {"typ": "Sonstiges", "datum": "", "absender": "", "betreff": ""}
 
-    # Versuch 2: Nächstes JSON aus dem Text
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError as e:
-        # Versuch mit einfachen Konversionen (z.B. Single-Quotes)
-        normalized = candidate.replace("'", '"')
-
-        # Entferne trailing commas
-        normalized = normalized.replace(',}', '}').replace(',]', ']')
+        candidate = candidate[:end]
+        normalized = candidate.replace("'", '"').replace(',}', '}').replace(',]', ']')
 
         try:
             metadata = json.loads(normalized)
         except json.JSONDecodeError:
-            raise ValueError(
-                f"JSON konnte nicht geparst werden: {e}. Rohoutput: {raw_output!r}. Kandidat: {candidate!r}. Normalisiert: {normalized!r}"
-            )
+            # Fallback auf default, da kein valides JSON
+            return {"typ": "Sonstiges", "datum": "", "absender": "", "betreff": ""}
 
-    # Vereinheitliche Feldnamen und fehlende Werte
+    if not metadata or not isinstance(metadata, dict):
+        return {"typ": "Sonstiges", "datum": "", "absender": "", "betreff": ""}
+
     return {
         "typ": metadata.get("typ") or metadata.get("type") or "Sonstiges",
         "datum": metadata.get("datum") or metadata.get("date") or "",
