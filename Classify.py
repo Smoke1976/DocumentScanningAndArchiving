@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 # --- KONFIGURATION ---
-API_KEY = "AIzaSyCpT1O-FYohWSCX_7caYaxTzijgSTeyFTI"
+API_KEY = "xxxxx"
 INPUT_DIR = Path(r"\\192.168.178.27\Network-Exchange-Folder\TOSHIBA-MQ04ABD200-01\HP_MFW4302_Scans")
 OUTPUT_DIR = Path(r"C:\Users\Tobias\OneDrive\Scans")
 
